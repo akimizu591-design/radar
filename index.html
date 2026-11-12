@@ -45,6 +45,7 @@
   .dot{width:10px;height:10px;border-radius:50%;flex:none;display:inline-block}
   #lists li{display:flex;align-items:center;gap:10px;padding:8px 2px;border-top:1px solid var(--line)}
   #lists li:first-child{border-top:0}
+  #hiddenList li{display:flex;align-items:center;gap:10px;padding:6px 2px;border-top:1px solid var(--line)}
   #lists label{flex:1;display:flex;align-items:center;gap:10px;min-width:0}
   #lists input{width:20px;height:20px;flex:none}
   .small{padding:6px 10px;min-height:36px;font-size:13px}
@@ -72,6 +73,7 @@
   <div class="sub" id="selAddr"></div>
   <div class="row">
     <a class="btn" id="selLink" target="_blank" rel="noopener">Googleマップで開く</a>
+    <button id="selHide">この地点を隠す</button>
     <button id="selClear">選択を解除</button>
   </div>
 </div>
@@ -104,6 +106,13 @@
     <button id="importBtn">ファイルを読み込む</button>
     <button id="addHere">現在地を登録</button>
     <input type="file" id="importIn" accept=".json,.csv,application/json,text/csv" multiple class="hide">
+  </div>
+  <div id="hiddenBox" class="hide">
+    <div class="row">
+      <button class="small" id="hiddenToggle"></button>
+      <button class="small hide" id="hiddenAll">すべて戻す</button>
+    </div>
+    <ul id="hiddenList"></ul>
   </div>
   <div class="sub">Googleデータエクスポートの .json / .csv を選べます。データはこのスマホの中だけに保存されます。</div>
 </div>
@@ -207,6 +216,10 @@ let pos = null;          // {lat,lng,acc}
 let heading = null;      // 0=北。null ならコンパスなし
 let selected = null;     // {type:'bike'} か {type:'place', li, pi}
 let hits = [];           // 画面上の点（タップ判定用）
+let hidden = new Set(store.get('radar.hidden', []));  // 個別に隠した地点
+const pk = p => p.url || (p.name + '@' + p.lat + ',' + p.lng);
+function saveHidden() { store.set('radar.hidden', [...hidden]); }
+let showHidden = false;
 let collecting = null;   // 自転車保存のための測位中 {best, timer}
 
 const $ = id => document.getElementById(id);
@@ -255,6 +268,7 @@ function allPoints() {
   lists.forEach((l, li) => {
     if (!l.visible) return;
     l.places.forEach((p, pi) => {
+      if (hidden.has(pk(p))) return;
       const r = distBear(pos, p);
       out.push({ type: 'place', li, pi, name: p.name, addr: p.addr, url: p.url, lat: p.lat, lng: p.lng, color: l.color, d: r.d, b: r.b });
     });
@@ -386,8 +400,15 @@ function renderSel() {
     ? `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=walking`
     : (p.url || `https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}`);
   $('selLink').textContent = p.type === 'bike' ? '徒歩ルートを開く' : 'Googleマップで開く';
+  $('selHide').classList.toggle('hide', p.type === 'bike');
 }
 $('selClear').onclick = () => { selected = null; renderAll(); };
+$('selHide').onclick = () => {
+  if (!selected || selected.type !== 'place') return;
+  const p = lists[selected.li] && lists[selected.li].places[selected.pi]; if (!p) return;
+  hidden.add(pk(p)); saveHidden(); selected = null;
+  say(`「${p.name}」を隠しました。下の「隠した地点」から戻せます。`); renderAll();
+};
 
 function ago(t) {
   const m = Math.round((Date.now() - t) / 60000);
@@ -475,9 +496,34 @@ function renderLists() {
     `<li><label><input type="checkbox" data-i="${i}" ${l.visible ? 'checked' : ''}>` +
     `<span class="dot" style="background:${l.color}"></span>` +
     `<span class="nm">${esc(l.name)}　${l.places.length}件` +
+    (l.places.some(p => hidden.has(pk(p))) ? `<span class="sub">（${l.places.filter(p => hidden.has(pk(p))).length}件を非表示）</span>` : '') +
     (l.pending && l.pending.length ? `<span class="sub">　＋座標なし ${l.pending.length}件</span>` : '') +
     `</span></label><button class="small" data-del="${i}">削除</button></li>`).join('');
+  renderHidden();
 }
+function hiddenPlaces() {
+  const out = [];
+  lists.forEach(l => l.places.forEach(p => { if (hidden.has(pk(p))) out.push({ p, l }); }));
+  return out;
+}
+function renderHidden() {
+  const hp = hiddenPlaces();
+  $('hiddenBox').classList.toggle('hide', !hp.length);
+  $('hiddenToggle').textContent = `隠した地点 ${hp.length}件` + (showHidden ? ' ▲' : ' ▼');
+  $('hiddenAll').classList.toggle('hide', !showHidden);
+  $('hiddenList').innerHTML = !showHidden ? '' : hp.map(({ p, l }) =>
+    `<li><span class="dot" style="background:${l.color}"></span><span class="nm">${esc(p.name)}</span>` +
+    `<button class="small" data-k="${esc(pk(p))}">戻す</button></li>`).join('');
+}
+$('hiddenToggle').onclick = () => { showHidden = !showHidden; renderHidden(); };
+$('hiddenAll').onclick = () => {
+  if (!confirm('隠した地点をすべて表示に戻しますか？')) return;
+  hiddenPlaces().forEach(({ p }) => hidden.delete(pk(p))); saveHidden(); renderAll();
+};
+$('hiddenList').addEventListener('click', e => {
+  const k = e.target.dataset.k; if (k == null) return;
+  hidden.delete(k); saveHidden(); renderAll();
+});
 $('lists').addEventListener('change', e => {
   const i = e.target.dataset.i; if (i == null) return;
   lists[i].visible = e.target.checked; saveLists(); selected = null; renderAll();
