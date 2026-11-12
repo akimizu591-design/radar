@@ -1,0 +1,13 @@
+{
+  "name": "お気に入りレーダー",
+  "short_name": "レーダー",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#06140c",
+  "theme_color": "#06140c",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
