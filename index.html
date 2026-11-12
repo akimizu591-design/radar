@@ -26,6 +26,8 @@
   button,.btn{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);
     border-radius:10px;padding:10px 12px;min-height:44px;cursor:pointer}
   button:active{filter:brightness(1.4)}
+  button:disabled{opacity:.7}
+  .seg button{font-size:14px}
   .seg button{flex:1;padding:8px 0}
   .seg button.on{background:var(--grid);color:#04130a;font-weight:700;border-color:var(--grid)}
   .primary{background:var(--bike);border-color:var(--bike);color:#1c0a04;font-weight:700;flex:1}
@@ -193,7 +195,7 @@ function parseTakeoutCSV(text) {
 
 /* ===== 保存データ ===== */
 const COLORS = ['#ffd84a', '#5ad1ff', '#ff9df0', '#7dff8a', '#ffa94d', '#c9a6ff', '#ff6b6b'];
-const RANGES = [300, 1000, 3000, 5000];
+const RANGES = [50, 300, 1000, 3000, 5000];
 const store = {
   get(k, def) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }
@@ -205,6 +207,7 @@ let pos = null;          // {lat,lng,acc}
 let heading = null;      // 0=北。null ならコンパスなし
 let selected = null;     // {type:'bike'} か {type:'place', li, pi}
 let hits = [];           // 画面上の点（タップ判定用）
+let collecting = null;   // 自転車保存のための測位中 {best, timer}
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -216,6 +219,7 @@ if ('geolocation' in navigator) {
   navigator.geolocation.watchPosition(p => {
     pos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy };
     renderAll();
+    if (collecting) onFix();
   }, e => {
     $('status').textContent = e.code === 1 ? '位置情報が許可されていません' : '位置情報を取得できません';
   }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
@@ -311,6 +315,11 @@ function draw() {
       ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]);
     }
     if (p.type === 'bike') {
+      const er = R * Math.hypot(bike.acc || 0, pos ? pos.acc : 0) / range;
+      if (!out && er > 16) {
+        ctx.fillStyle = 'rgba(255,122,89,.16)'; ctx.strokeStyle = 'rgba(255,122,89,.6)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(x, y, er, 0, 7); ctx.fill(); ctx.stroke();
+      }
       ctx.fillStyle = p.color; ctx.strokeStyle = '#1c0a04'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(x, y, 11, 0, 7); ctx.fill(); ctx.stroke();
       ctx.font = '13px system-ui'; ctx.fillStyle = '#1c0a04'; ctx.fillText('🚲', x, y + 1);
@@ -390,29 +399,49 @@ function renderBike() {
   const has = !!bike;
   $('bikeFind').classList.toggle('hide', !has);
   $('bikeMore').classList.toggle('hide', !has);
-  $('bikeSave').textContent = has ? 'ここに停め直す' : 'ここに停めた';
+  if (!collecting) $('bikeSave').textContent = has ? 'ここに停め直す' : 'ここに停めた';
   const img = $('photo');
   if (!has) { $('bikeInfo').className = 'sub'; $('bikeInfo').textContent = 'まだ保存されていません'; img.classList.add('hide'); return; }
   let t = '';
   if (pos) { const r = distBear(pos, bike); t = `<div class="big">${dirName(r.b)} ${fmtDist(r.d)}</div>`; }
   t += `<div class="sub">${ago(bike.time)}に保存（保存時の誤差 ±${Math.round(bike.acc)}m）</div>`;
+  if (bike.acc > 20) t += `<div class="sub">誤差が大きめです。レーダーの薄い円の中を探してください。</div>`;
   if (bike.memo) t += `<div>${esc(bike.memo)}</div>`;
   $('bikeInfo').className = ''; $('bikeInfo').innerHTML = t;
   const ph = store.get('radar.bikePhoto', null);
   img.classList.toggle('hide', !ph); if (ph) img.src = ph;
 }
+function finishBikeSave() {
+  if (!collecting) return;
+  const b = collecting.best; clearTimeout(collecting.timer); collecting = null;
+  bike = { lat: b.lat, lng: b.lng, acc: b.acc, time: Date.now(), memo: '' };
+  store.set('radar.bike', bike); localStorage.removeItem('radar.bikePhoto');
+  $('bikeSave').disabled = false;
+  say(b.acc > 20
+    ? `保存しました（誤差 ±${Math.round(b.acc)}m。屋根の下では大きくなります。メモか写真を残すと安心です）`
+    : `保存しました（誤差 ±${Math.round(b.acc)}m）`);
+  renderAll();
+}
+// 測位中に新しい位置が来たら、いちばん誤差の小さいものを残す
+function onFix() {
+  if (pos.acc < collecting.best.acc) collecting.best = pos;
+  $('bikeSave').textContent = `測位中… ±${Math.round(collecting.best.acc)}m`;
+  if (collecting.best.acc <= 12) finishBikeSave();
+}
 $('bikeSave').onclick = () => {
+  if (collecting) return;
   if (!pos) return say('位置情報がまだ取れていません。少し待ってからもう一度押してください。');
   if (bike && !confirm('今の場所で自転車の位置を上書きしますか？')) return;
-  bike = { lat: pos.lat, lng: pos.lng, acc: pos.acc, time: Date.now(), memo: '' };
-  store.set('radar.bike', bike); localStorage.removeItem('radar.bikePhoto');
-  say(pos.acc > 30 ? `保存しました（誤差が±${Math.round(pos.acc)}mと大きめです。メモか写真を残すと安心です）` : '保存しました');
-  renderAll();
+  if (pos.acc <= 12) { collecting = { best: pos, timer: 0 }; return finishBikeSave(); }
+  // 誤差が大きいときは最大8秒待って、より良い位置を選ぶ
+  collecting = { best: pos, timer: setTimeout(finishBikeSave, 8000) };
+  $('bikeSave').disabled = true;
+  $('bikeSave').textContent = `測位中… ±${Math.round(pos.acc)}m`;
 };
 $('bikeFind').onclick = () => {
   if (!bike) return;
   selected = { type: 'bike' };
-  if (pos) { const d = distBear(pos, bike).d; setRange(RANGES.find(r => r >= d) || RANGES[RANGES.length - 1]); }
+  if (pos) { const d = distBear(pos, bike).d; setRange(RANGES.find(r => r >= d * 1.3) || RANGES[RANGES.length - 1]); }
   renderAll(); scrollTo({ top: 0, behavior: 'smooth' });
 };
 $('bikeMemo').onclick = () => {
